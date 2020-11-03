@@ -40,7 +40,9 @@ int main(int argc, char** argv)
     std::vector<cv::Mat> imgvector;
     for(int i=0; i<batchsize; i++)
         imgvector.push_back(image1);
+    for(int i=0; i<100; i++){
     auto batch_results = PosePluginProcess(estimator, imgvector);
+    }
     std::cout << "Done inference" << std::endl;
     PosePluginCtxDeinit(estimator);
     return 0;

@@ -2,16 +2,33 @@
 #include "openpifpaf/trt_utils.hpp"
 #include "openpifpaf/upsample.hpp"
 
-inline void* safeCudaMalloc(size_t memSize)
+#if NV_TENSORRT_MAJOR >= 7
+static inline nvinfer1::Dims shiftDims( const nvinfer1::Dims& dims )
 {
-    void* deviceMem;
-    NV_CUDA_CHECK(cudaMalloc(&deviceMem, memSize));
-    if (deviceMem == nullptr)
-    {
-        std::cerr << "Out of memory" << std::endl;
-        exit(1);
-    }
-    return deviceMem;
+	// TensorRT 7.0 requires EXPLICIT_BATCH flag for ONNX models,
+	// which adds a batch dimension (4D NCHW), whereas historically
+	// 3D CHW was expected.  Remove the batch dim (it is typically 1)
+	nvinfer1::Dims out = dims;
+    int number_dims = dims.nbDims;
+    for(int i=0; i<number_dims; i++)
+    out.d[i] = dims.d[i];
+    out.d[number_dims] = 1;
+	return out;
+}
+#endif
+
+modelType modelTypeFromStr( const char* str )
+{
+	if( !str )
+		return MODEL_CUSTOM;
+
+	else if( strcasecmp(str, "onnx") == 0 )
+		return MODEL_ONNX;
+
+	else if( strcasecmp(str, "engine") == 0 || strcasecmp(str, "plan") == 0 )
+		return MODEL_ENGINE;
+
+	return MODEL_CUSTOM;
 }
 
 inline int64_t volume(const nvinfer1::Dims& d)
@@ -35,6 +52,7 @@ inline unsigned int getElementSize(nvinfer1::DataType t)
 TensorRTNet::TensorRTNet(const uint batchSize, const NetworkInfo& networkInfo):
     mEnginePath(networkInfo.enginePath),
     mConfigFilePath(networkInfo.configFilePath),
+    mModelType(MODEL_CUSTOM),
     mInputH(0),
     mInputW(0),
     mInputC(0),
@@ -104,15 +122,19 @@ void TensorRTNet::doInference()
 
 void TensorRTNet::allocateBuffers()
 {
-
-    mDeviceBuffers.resize(mEngine->getNbBindings(), nullptr);
-    mOutputTensors.resize(mEngine->getNbBindings() - mNumberInput);
+    int numbindings_per_profile = mEngine->getNbBindings() / mEngine->getNbOptimizationProfiles();
+    mDeviceBuffers.resize(numbindings_per_profile, nullptr);
+    mOutputTensors.resize(numbindings_per_profile - mNumberInput);
 
     assert(mInputBindingIndex != -1 && "Invalid input binding index");
 
     // allocate buffers for input buffers (gpu Mem)
     nvinfer1::Dims input_dims = mEngine->getBindingDimensions(mInputBindingIndex);
     nvinfer1::DataType input_dtype = mEngine->getBindingDataType(mInputBindingIndex);
+    #if NV_TENSORRT_MAJOR >= 7
+        if( mModelType == MODEL_ONNX )
+            input_dims = shiftDims(input_dims);  // change NCHW to CHW for EXPLICIT_BATCH
+	#endif
     int64_t input_totalSize = volume(input_dims) * mBatchSize * getElementSize(input_dtype);
     NV_CUDA_CHECK(cudaMalloc(&mDeviceBuffers.at(mInputBindingIndex), input_totalSize));
     // allocate Buffers for device outputs and host outputs
@@ -121,9 +143,13 @@ void TensorRTNet::allocateBuffers()
         int hostOutputIdx = output_idx - mNumberInput;
         nvinfer1::Dims dim = mEngine->getBindingDimensions(output_idx);
         nvinfer1::DataType dtype = mEngine->getBindingDataType(output_idx);
+        #if NV_TENSORRT_MAJOR >= 7
+            if( mModelType == MODEL_ONNX )
+                dim = shiftDims(dim);  // change NCHW to CHW for EXPLICIT_BATCH
+	    #endif
         int64_t totalSize = volume(dim) * mBatchSize * getElementSize(dtype);
         NV_CUDA_CHECK(cudaMalloc(&mDeviceBuffers.at(output_idx), totalSize));
-	mOutputTensors[hostOutputIdx].volume = totalSize;
+	    mOutputTensors[hostOutputIdx].volume = totalSize;
         mOutputTensors[hostOutputIdx].bindingIndex = output_idx;
         NV_CUDA_CHECK(cudaMallocHost(&(mOutputTensors[hostOutputIdx].hostBuffer),
                                         totalSize));
@@ -192,6 +218,7 @@ void TensorRTNet::parseConfigFile()
     mInputC = jsonConfig["net_info"]["input_c"];
     mOutputH = jsonConfig["net_info"]["output_h"];
     mOutputW = jsonConfig["net_info"]["output_w"];
+    mModelType = modelTypeFromStr(jsonConfig["net_info"]["model_type"].get<std::string>().c_str());
     // input volum
     mInputSize = mInputH * mInputW * mInputC;
     // output parser info

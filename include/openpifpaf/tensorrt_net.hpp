@@ -13,6 +13,41 @@
 #include "openpifpaf/json.hpp"
 #include "openpifpaf/npp_preprocess.hpp"
 
+#if NV_TENSORRT_MAJOR > 5
+typedef nvinfer1::Dims3 Dims3;
+
+#define DIMS_C(x) x.d[0]
+#define DIMS_H(x) x.d[1]
+#define DIMS_W(x) x.d[2]
+
+#elif NV_TENSORRT_MAJOR > 1
+typedef nvinfer1::DimsCHW Dims3;
+
+#define DIMS_C(x) x.d[0]
+#define DIMS_H(x) x.d[1]
+#define DIMS_W(x) x.d[2]
+
+#else
+typedef nvinfer1::Dims3 Dims3;
+
+#define DIMS_C(x) x.c
+#define DIMS_H(x) x.h
+#define DIMS_W(x) x.w
+
+#ifndef NV_TENSORRT_MAJOR
+#define NV_TENSORRT_MAJOR 1
+#define NV_TENSORRT_MINOR 0
+#endif
+#endif
+
+enum modelType
+{
+	MODEL_CUSTOM = 0,	/**< Created directly with TensorRT API */
+	MODEL_ONNX,		/**< ONNX */
+	MODEL_ENGINE		/**< TensorRT engine/plan */
+};
+
+modelType modelTypeFromStr( const char* str );
 
 class TensorRTNet
 {
@@ -58,6 +93,7 @@ protected:
     std::vector<int> mOutputBindingIndexes;
     std::vector<TensorInfo> mOutputTensors;
     int mNumberInput=0;
+    modelType mModelType;
 
     typedef struct GPUImg {
     void *data;
