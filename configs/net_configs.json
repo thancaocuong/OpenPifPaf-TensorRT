@@ -1,0 +1,7 @@
+{
+    "net_info":
+    {
+        "input_h" : 97, "input_w": 129, "input_c": 3,
+        "output_h": 9, "output_w": 17, "model_type" : "onnx"
+    }
+}
